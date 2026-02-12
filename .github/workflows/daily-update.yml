@@ -1,20 +1,14 @@
-name: Daily GTFS download
+name: Test GTFS download
 
 on:
   schedule:
-    - cron: "0 2 * * *"
-    - cron: "0 3 * * *"
+    - cron: "32 18 * * *" # 18:22 UTC (~19:22 Ljubljana in winter)
   workflow_dispatch:
 
 jobs:
   nap_gtfs:
     runs-on: ubuntu-latest
     steps:
-      - name: Run only at 04:00 Europe/Ljubljana
-        run: |
-          export TZ="Europe/Ljubljana"
-          if [ "$(date +%H)" != "04" ]; then exit 0; fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -28,7 +22,6 @@ jobs:
           GTFS_OUT: gtfs.zip
         run: node scripts/nap-download-gtfs.js
 
-      # optional: commit gtfs.zip to repo (or parse it + generate HTML and commit that)
       - name: Commit & push (if changed)
         run: |
           git config user.name "github-actions[bot]"
