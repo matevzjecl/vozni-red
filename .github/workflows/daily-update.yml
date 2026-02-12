@@ -2,7 +2,7 @@ name: Test GTFS download
 
 on:
   schedule:
-    - cron: "32 18 * * *" # 18:22 UTC (~19:22 Ljubljana in winter)
+    - cron: "*/5 * * * *" # 18:22 UTC (~19:22 Ljubljana in winter)
   workflow_dispatch:
 
 jobs:
