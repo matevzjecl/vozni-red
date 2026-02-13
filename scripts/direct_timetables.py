@@ -1,31 +1,61 @@
 #!/usr/bin/env python3
+import csv
 import json
-import html
 import os
 import sys
-import unicodedata
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date as Date, timedelta
+from typing import Dict, List, Optional, Set
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+GTFS_FILES = {
+    "agency": "agency.txt",
+    "routes": "routes.txt",
+    "trips": "trips.txt",
+    "stops": "stops.txt",
+    "stop_times": "stop_times.txt",
+    "calendar": "calendar.txt",
+    "calendar_dates": "calendar_dates.txt",
+    "type_mappings": "type_mappings.txt",
+}
+
+BUS_ROUTE_TYPE = "3"
+TRAIN_ROUTE_TYPE = "2"
 
 
-def slugify(s: str) -> str:
-    s = s.replace("–", "-").replace("—", "-")
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = s.lower().strip()
+def detect_encoding(path: str) -> str:
+    raw = open(path, "rb").read(8192)
+    for enc in ("utf-8-sig", "utf-8", "cp1250", "iso-8859-2"):
+        try:
+            raw.decode(enc)
+            return enc
+        except UnicodeDecodeError:
+            continue
+    return "utf-8-sig"
 
-    out = []
-    for ch in s:
-        if ch.isalnum():
-            out.append(ch)
-        elif ch in (" ", "-", "_"):
-            out.append("-")
-        else:
-            out.append("-")
 
-    slug = "".join(out)
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return slug.strip("-") or "route"
+def open_csv(path: str):
+    enc = detect_encoding(path)
+    return open(path, "r", encoding=enc, newline="")
+
+
+def parse_yyyymmdd(s: str) -> Date:
+    s = s.strip()
+    return Date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
+
+
+def yyyymmdd(d: Date) -> str:
+    return f"{d.year:04d}{d.month:02d}{d.day:02d}"
+
+
+def weekday_key(d: Date) -> str:
+    keys = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    return keys[d.weekday()]
 
 
 def time_to_seconds(t: str) -> int:
@@ -42,201 +72,327 @@ def time_to_seconds(t: str) -> int:
         return 10**9
 
 
-def parse_yyyymmdd(s: str) -> Date:
-    s = (s or "").strip()
-    return Date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
+@dataclass(frozen=True)
+class Trip:
+    trip_id: str
+    route_id: str
+    service_id: str
+    trip_headsign: str
 
 
-def fmt_date(d: Date) -> str:
-    return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
+@dataclass(frozen=True)
+class Route:
+    route_id: str
+    agency_id: str
+    route_short_name: str
+    route_long_name: str
+    route_type: str
 
 
-def compress_dates(ds) -> str:
-    ds = [d for d in (ds or []) if d]
-    if not ds:
-        return "—"
+@dataclass
+class ServiceDef:
+    start: Optional[Date] = None
+    end: Optional[Date] = None
+    dow: Optional[Dict[str, str]] = None
+    adds: Set[Date] = None
+    rems: Set[Date] = None
 
-    dd = sorted(parse_yyyymmdd(x) for x in ds)
-    ranges = []
-    start = prev = dd[0]
-
-    for cur in dd[1:]:
-        if cur == prev + timedelta(days=1):
-            prev = cur
-        else:
-            ranges.append((start, prev))
-            start = prev = cur
-
-    ranges.append((start, prev))
-
-    parts = []
-    for a, b in ranges:
-        parts.append(fmt_date(a) if a == b else f"{fmt_date(a)}..{fmt_date(b)}")
-    return ", ".join(parts)
+    def __post_init__(self):
+        if self.adds is None:
+            self.adds = set()
+        if self.rems is None:
+            self.rems = set()
 
 
-def route_filename(frm: str, to: str) -> str:
-    return f"{slugify(frm)}-{slugify(to)}.html"
+@dataclass(frozen=True)
+class Occ:
+    stop_id: str
+    station: str
+    stop_type: Optional[int]
+    seq: int
+    arr: str
+    dep: str
 
 
-def delete_old_route_pages(out_dir: str):
-    for fn in os.listdir(out_dir):
-        if not fn.endswith(".html"):
+def load_type_mappings() -> Dict[str, int]:
+    p = os.path.join(HERE, GTFS_FILES["type_mappings"])
+    if not os.path.exists(p):
+        return {}
+    out: Dict[str, int] = {}
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            sid = (row.get("stop_id") or "").strip()
+            t = (row.get("type") or "").strip()
+            if not sid or not t:
+                continue
+            try:
+                out[sid] = int(t)
+            except ValueError:
+                continue
+    return out
+
+
+def load_stop_names() -> Dict[str, str]:
+    p = os.path.join(HERE, GTFS_FILES["stops"])
+    out: Dict[str, str] = {}
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            out[row["stop_id"]] = row.get("stop_name", "") or ""
+    return out
+
+
+def load_agencies() -> Dict[str, str]:
+    p = os.path.join(HERE, GTFS_FILES["agency"])
+    out: Dict[str, str] = {}
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            out[row["agency_id"]] = row.get("agency_name", "") or ""
+    return out
+
+
+def load_routes() -> Dict[str, Route]:
+    p = os.path.join(HERE, GTFS_FILES["routes"])
+    out: Dict[str, Route] = {}
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            rid = row["route_id"]
+            out[rid] = Route(
+                route_id=rid,
+                agency_id=row.get("agency_id", "") or "",
+                route_short_name=row.get("route_short_name", "") or "",
+                route_long_name=row.get("route_long_name", "") or "",
+                route_type=row.get("route_type", "") or "",
+            )
+    return out
+
+
+def load_trips() -> Dict[str, Trip]:
+    p = os.path.join(HERE, GTFS_FILES["trips"])
+    out: Dict[str, Trip] = {}
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            tid = row["trip_id"]
+            out[tid] = Trip(
+                trip_id=tid,
+                route_id=row.get("route_id", "") or "",
+                service_id=row.get("service_id", "") or "",
+                trip_headsign=row.get("trip_headsign", "") or "",
+            )
+    return out
+
+
+def load_services() -> Dict[str, ServiceDef]:
+    services: Dict[str, ServiceDef] = {}
+
+    p = os.path.join(HERE, GTFS_FILES["calendar"])
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            sid = row["service_id"]
+            sd = services.get(sid) or ServiceDef()
+            sd.start = parse_yyyymmdd(row["start_date"])
+            sd.end = parse_yyyymmdd(row["end_date"])
+            sd.dow = {
+                "monday": row.get("monday", "0"),
+                "tuesday": row.get("tuesday", "0"),
+                "wednesday": row.get("wednesday", "0"),
+                "thursday": row.get("thursday", "0"),
+                "friday": row.get("friday", "0"),
+                "saturday": row.get("saturday", "0"),
+                "sunday": row.get("sunday", "0"),
+            }
+            services[sid] = sd
+
+    p = os.path.join(HERE, GTFS_FILES["calendar_dates"])
+    with open_csv(p) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            sid = row["service_id"]
+            d = parse_yyyymmdd(row["date"])
+            et = row.get("exception_type", "")
+            sd = services.get(sid) or ServiceDef()
+            if et == "1":
+                sd.adds.add(d)
+            elif et == "2":
+                sd.rems.add(d)
+            services[sid] = sd
+
+    return services
+
+
+def dates_for_service(sd: ServiceDef) -> List[str]:
+    if sd.start is None or sd.end is None or sd.dow is None:
+        ds = sorted([d for d in sd.adds if d not in sd.rems])
+        return [yyyymmdd(d) for d in ds]
+
+    out: Set[Date] = set()
+    d = sd.start
+    while d <= sd.end:
+        if sd.dow.get(weekday_key(d), "0") == "1":
+            out.add(d)
+        d += timedelta(days=1)
+
+    out |= sd.adds
+    out -= sd.rems
+    return [yyyymmdd(d) for d in sorted(out)]
+
+
+def reduce_station_sequence(occs: List[Occ]) -> List[Occ]:
+    occs = sorted(occs, key=lambda o: o.seq)
+    reduced: List[Occ] = []
+    last_station = None
+    for o in occs:
+        if o.station == last_station:
             continue
-        if fn in ("index.html", "routes.html"):
-            continue
-        p = os.path.join(out_dir, fn)
-        if os.path.isfile(p):
-            os.remove(p)
+        reduced.append(o)
+        last_station = o.station
+    return reduced
 
 
-def resolve_input_path() -> str:
-    if len(sys.argv) >= 2 and (sys.argv[1] or "").strip():
-        return sys.argv[1].strip()
-
-    envp = (os.environ.get("OUT_JSON") or "").strip()
-    if envp:
-        return envp
-
-    for cand in ("gtfs_tmp/out.json", "out.json"):
-        if os.path.exists(cand):
-            return cand
-
-    return "gtfs_tmp/out.json"
+def expected_route_type(stop_type: int) -> str:
+    return BUS_ROUTE_TYPE if stop_type == 0 else TRAIN_ROUTE_TYPE
 
 
 def main():
-    src_out_json = resolve_input_path()
-    if not os.path.exists(src_out_json):
-        print(f"Missing out.json: {src_out_json}", file=sys.stderr)
-        print("Usage: python scripts/build_pages.py <path-to-out.json>", file=sys.stderr)
+    type_map = load_type_mappings()
+    cli_stop_ids = [a.strip() for a in sys.argv[1:] if a.strip()]
+
+    if cli_stop_ids:
+        stop_ids = cli_stop_ids
+    else:
+        if not type_map:
+            print("No stop_ids provided and type_mappings.txt not found (or empty).", file=sys.stderr)
+            sys.exit(2)
+        stop_ids = list(type_map.keys())
+
+    if len(stop_ids) < 2:
+        print("Need at least 2 stop_ids.", file=sys.stderr)
         sys.exit(2)
 
-    out_dir = os.getcwd()
+    stop_names = load_stop_names()
+    missing = [sid for sid in stop_ids if sid not in stop_names]
+    if missing:
+        print("Unknown stop_id(s) not found in stops.txt:", ", ".join(missing), file=sys.stderr)
+        sys.exit(1)
 
-    with open(src_out_json, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    agencies = load_agencies()
+    routes = load_routes()
+    trips = load_trips()
+    services = load_services()
 
-    with open(os.path.join(out_dir, "out.json"), "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    allowed_stop_ids = set(stop_ids)
+    service_dates_cache: Dict[str, List[str]] = {}
 
-    delete_old_route_pages(out_dir)
+    def get_service_dates(service_id: str) -> List[str]:
+        if service_id in service_dates_cache:
+            return service_dates_cache[service_id]
+        sd = services.get(service_id)
+        ds = dates_for_service(sd) if sd else []
+        service_dates_cache[service_id] = ds
+        return ds
 
-    routes = []
-    for frm, tos in data.items():
-        for to, entries in tos.items():
-            routes.append((frm, to, entries))
-    routes.sort(key=lambda x: (x[0], x[1]))
+    trip_occs: Dict[str, List[Occ]] = defaultdict(list)
 
-    for frm, to, entries in routes:
-        fn = route_filename(frm, to)
+    stop_times_path = os.path.join(HERE, GTFS_FILES["stop_times"])
+    with open_csv(stop_times_path) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            sid = (row.get("stop_id") or "").strip()
+            if sid not in allowed_stop_ids:
+                continue
 
-        uniq = {}
-        for e in entries:
-            dep = (e.get("departure_time") or "").strip() or "—"
-            arr = (e.get("arrival_time") or "").strip() or "—"
-            ag = (e.get("agency_name") or "").strip() or "—"
-            key = (dep, arr, ag)
-            if key not in uniq:
-                uniq[key] = set()
-            for d in (e.get("dates") or []):
-                uniq[key].add(d)
+            trip_id = (row.get("trip_id") or "").strip()
+            if not trip_id:
+                continue
 
-        rows = []
-        for (dep, arr, ag), dates in uniq.items():
-            rows.append((dep, arr, ag, sorted(dates)))
+            seq_raw = (row.get("stop_sequence") or "").strip()
+            try:
+                seq = int(seq_raw)
+            except ValueError:
+                continue
 
-        rows.sort(key=lambda r: (time_to_seconds(r[0]), time_to_seconds(r[1]), r[2]))
-
-        tr = []
-        for dep, arr, ag, dates in rows:
-            tr.append(
-                "<tr>"
-                f"<td>{html.escape(dep)}</td>"
-                f"<td>{html.escape(arr)}</td>"
-                f"<td>{html.escape(ag)}</td>"
-                f"<td>{html.escape(compress_dates(dates))}</td>"
-                "</tr>"
+            trip_occs[trip_id].append(
+                Occ(
+                    stop_id=sid,
+                    station=stop_names[sid],
+                    stop_type=type_map.get(sid),
+                    seq=seq,
+                    arr=(row.get("arrival_time") or "").strip(),
+                    dep=(row.get("departure_time") or "").strip(),
+                )
             )
 
-        body_rows = "".join(tr) if tr else "<tr><td>—</td><td>—</td><td>—</td><td>—</td></tr>"
+    result: Dict[str, Dict[str, List[dict]]] = {}
 
-        page = f"""<!doctype html>
-<html lang="sl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>{html.escape(frm)} – {html.escape(to)}</title>
-  </head>
-  <body>
-    <p><a href="./">← Nazaj</a></p>
-    <h1>{html.escape(frm)} – {html.escape(to)}</h1>
+    for trip_id, occs in trip_occs.items():
+        t = trips.get(trip_id)
+        if not t:
+            continue
 
-    <table border="1" cellpadding="6" cellspacing="0">
-      <thead>
-        <tr>
-          <th>Odhod</th>
-          <th>Prihod</th>
-          <th>Prevoznik</th>
-          <th>Datumi</th>
-        </tr>
-      </thead>
-      <tbody>
-        {body_rows}
-      </tbody>
-    </table>
-  </body>
-</html>
-"""
-        with open(os.path.join(out_dir, fn), "w", encoding="utf-8", newline="\n") as f:
-            f.write(page)
+        r = routes.get(t.route_id)
+        rt = r.route_type if r else ""
 
-    li = []
-    for frm, to, _ in routes:
-        fn = route_filename(frm, to)
-        li.append(f'<li><a href="./{html.escape(fn)}">{html.escape(frm)} – {html.escape(to)}</a></li>')
+        seq = reduce_station_sequence(occs)
+        if len(seq) < 2:
+            continue
 
-    routes_html = f"""<!doctype html>
-<html lang="sl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Relacije</title>
-  </head>
-  <body>
-    <p><a href="./">← Nazaj</a></p>
-    <h1>Relacije</h1>
-    <ul>
-      {''.join(li) if li else '<li>Ni relacij.</li>'}
-    </ul>
-  </body>
-</html>
-"""
-    with open(os.path.join(out_dir, "routes.html"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(routes_html)
+        svc_dates = get_service_dates(t.service_id)
+        if not svc_dates:
+            continue
 
-    index_html = f"""<!doctype html>
-<html lang="sl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Vozni redi</title>
-  </head>
-  <body>
-    <h1>Vozni redi</h1>
+        agency_name = agencies.get(r.agency_id, "") if r else ""
+        route_short = r.route_short_name if r else ""
+        route_long = r.route_long_name if r else ""
 
-    <p><a href="./routes.html">Vse relacije</a></p>
-    <p><a href="./out.json">out.json</a></p>
+        for i in range(len(seq) - 1):
+            o = seq[i]
+            d = seq[i + 1]
 
-    <ul>
-      {''.join(li) if li else '<li>Ni relacij.</li>'}
-    </ul>
-  </body>
-</html>
-"""
-    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(index_html)
+            if o.stop_type is not None and d.stop_type is not None:
+                if o.stop_type != d.stop_type:
+                    continue
+                if rt and rt != expected_route_type(o.stop_type):
+                    continue
+
+            dep = o.dep or o.arr or ""
+            arr = d.arr or d.dep or ""
+
+            entry = {
+                "from_stop_id": o.stop_id,
+                "to_stop_id": d.stop_id,
+                "from_stop_type": o.stop_type,
+                "to_stop_type": d.stop_type,
+                "departure_time": dep,
+                "arrival_time": arr,
+                "trip_id": t.trip_id,
+                "service_id": t.service_id,
+                "trip_headsign": t.trip_headsign,
+                "route_id": t.route_id,
+                "route_type": rt,
+                "agency_name": agency_name,
+                "route_short_name": route_short,
+                "route_long_name": route_long,
+                "dates": svc_dates,
+            }
+
+            result.setdefault(o.station, {}).setdefault(d.station, []).append(entry)
+
+    for frm in result:
+        for to in result[frm]:
+            result[frm][to].sort(
+                key=lambda e: (
+                    time_to_seconds(e.get("departure_time", "")),
+                    time_to_seconds(e.get("arrival_time", "")),
+                    e.get("trip_id", ""),
+                )
+            )
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
