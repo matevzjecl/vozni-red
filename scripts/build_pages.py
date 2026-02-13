@@ -33,6 +33,10 @@ def slugify(s: str) -> str:
     return slug.strip("-") or "route"
 
 
+def route_filename(frm: str, to: str) -> str:
+    return f"{slugify(frm)}-{slugify(to)}.html"
+
+
 def time_to_seconds(t: str) -> int:
     t = (t or "").strip()
     if not t:
@@ -45,11 +49,6 @@ def time_to_seconds(t: str) -> int:
         return h * 3600 + m * 60 + s
     except Exception:
         return 10**9
-
-
-def parse_yyyymmdd(s: str) -> Date:
-    s = (s or "").strip()
-    return Date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
 
 
 def yyyymmdd(d: Date) -> str:
@@ -65,8 +64,10 @@ def dd_mm(d: Date) -> str:
     return f"{d.day:02d}. {d.month:02d}."
 
 
-def route_filename(frm: str, to: str) -> str:
-    return f"{slugify(frm)}-{slugify(to)}.html"
+def today_sl() -> Date:
+    if ZoneInfo is None:
+        return datetime.now().date()
+    return datetime.now(ZoneInfo("Europe/Ljubljana")).date()
 
 
 def delete_old_route_pages(out_dir: str):
@@ -93,12 +94,6 @@ def resolve_input_path() -> str:
             return cand
 
     return "gtfs_tmp/out.json"
-
-
-def today_sl() -> Date:
-    if ZoneInfo is None:
-        return datetime.now().date()
-    return datetime.now(ZoneInfo("Europe/Ljubljana")).date()
 
 
 def main():
@@ -140,20 +135,19 @@ def main():
             ag = (e.get("agency_name") or "").strip() or "—"
             key = (dep, arr, ag)
 
-            for d in (e.get("dates") or []):
-                if d in day_set:
-                    per_day[d][key] = True
+            for dk in (e.get("dates") or []):
+                if dk in day_set:
+                    per_day[dk][key] = True
 
-        day_blocks = []
         nav = []
+        day_blocks = []
 
-        for d, key in zip(days, day_keys):
-            rows = list(per_day[key].keys())
+        for idx, (d, dk) in enumerate(zip(days, day_keys)):
+            rows = list(per_day[dk].keys())
             rows.sort(key=lambda r: (time_to_seconds(r[0]), time_to_seconds(r[1]), r[2]))
 
-            nav.append(
-                f'<li><a href="#d{html.escape(key)}">{html.escape(day_name_sl(d))} {html.escape(dd_mm(d))}</a></li>'
-            )
+            label = f"{day_name_sl(d)} {dd_mm(d)}"
+            nav.append(f'<li><a href="#d{html.escape(dk)}">{html.escape(label)}</a></li>')
 
             tr = []
             for dep, arr, ag in rows:
@@ -166,11 +160,12 @@ def main():
                 )
 
             body_rows = "".join(tr) if tr else "<tr><td>—</td><td>—</td><td>—</td></tr>"
+            open_attr = " open" if idx == 0 else ""
 
             day_blocks.append(
                 f"""
-<details id="d{html.escape(key)}">
-  <summary>{html.escape(day_name_sl(d))} {html.escape(dd_mm(d))} ({len(rows)})</summary>
+<details class="day" id="d{html.escape(dk)}"{open_attr}>
+  <summary>{html.escape(label)} ({len(rows)})</summary>
   <table border="1" cellpadding="6" cellspacing="0">
     <thead>
       <tr>
@@ -198,12 +193,12 @@ def main():
     <p><a href="./">← Nazaj</a></p>
     <h1>{html.escape(frm)} – {html.escape(to)}</h1>
 
-    <p>Naslednjih 10 dni:</p>
+    <p>Izberi dan (naslednjih 10 dni):</p>
     <ul>
       {''.join(nav)}
     </ul>
 
-    {"".join(day_blocks)}
+    {''.join(day_blocks)}
   </body>
 </html>
 """
