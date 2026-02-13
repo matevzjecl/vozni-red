@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="sl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Opera Mini JS test</title>
+    <style>
+      body { font-family: sans-serif; padding: 12px; }
+      .muted { opacity: 0.7; }
+      .bar { margin: 10px 0; padding: 8px; border: 1px solid #ccc; }
+      .days { white-space: nowrap; overflow-x: auto; padding: 6px 0; }
+      .daybtn {
+        display: inline-block; margin: 0 6px 6px 0; padding: 10px 10px;
+        border: 1px solid #333; text-decoration: none; color: #000;
+        border-radius: 6px;
+      }
+      .daybtn.active { background: #000; color: #fff; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+      th, td { border: 1px solid #ccc; padding: 8px; }
+      th { text-align: left; }
+      td.time { white-space: nowrap; }
+      .ok { color: #0a0; }
+      .warn { color: #a60; }
+      .err { color: #a00; }
+      .small { font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Opera Mini JS test</h1>
+
+    <noscript>
+      <p class="err"><b>JS is disabled</b> (noscript shown). If you see this in Opera Mini, JS won’t work for your pages.</p>
+    </noscript>
+
+    <div class="bar">
+      <div class="small muted">
+        This page uses simple JS (DOM + click handlers + sorting). Use it to test if Opera Mini runs JS for your site.
+      </div>
+      <p>
+        <button id="btnSample">Load sample data</button>
+        <button id="btnOutJson">Load out.json (fetch/XHR)</button>
+      </p>
+      <div id="status" class="small muted">Status: not loaded</div>
+    </div>
+
+    <div class="bar">
+      <b>Next 10 days:</b>
+      <div id="days" class="days"></div>
+    </div>
+
+    <div class="bar">
+      <b id="selTitle">Select a day</b>
+      <div id="selMeta" class="small muted"></div>
+
+      <table id="tbl" style="display:none">
+        <thead>
+          <tr>
+            <th>Odhod</th>
+            <th>Prihod</th>
+            <th>Prevoznik</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+
+      <div id="empty" class="muted" style="display:none">Ni voženj.</div>
+    </div>
+
+    <script>
+      (function () {
+        function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+        function yyyymmddFromDate(d) {
+          return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());
+        }
+
+        function ddmmFromDate(d) {
+          return pad2(d.getDate()) + ". " + pad2(d.getMonth() + 1) + ".";
+        }
+
+        function dayNameSl(d) {
+          var names = ["ned", "pon", "tor", "sre", "čet", "pet", "sob"];
+          return names[d.getDay()];
+        }
+
+        function timeToSeconds(t) {
+          t = (t || "").replace(/\s+/g, "");
+          if (!t) return 1e9;
+          var p = t.split(":");
+          var h = parseInt(p[0], 10);
+          var m = parseInt(p[1] || "0", 10);
+          var s = parseInt(p[2] || "0", 10);
+          if (isNaN(h) || isNaN(m) || isNaN(s)) return 1e9;
+          return h * 3600 + m * 60 + s;
+        }
+
+        function setStatus(text, cls) {
+          var el = document.getElementById("status");
+          el.className = "small " + (cls || "muted");
+          el.innerHTML = "Status: " + text;
+        }
+
+        var DAYS = [];
+        var DAY_KEYS = [];
+        var routeData = null; // array of entries: {dep,arr,ag,dates:[yyyymmdd,...]}
+        var selectedDay = null;
+
+        function initDays() {
+          var base = new Date();
+          base.setHours(0, 0, 0, 0);
+
+          DAYS = [];
+          DAY_KEYS = [];
+          for (var i = 0; i < 10; i++) {
+            var d = new Date(base.getTime() + i * 86400000);
+            DAYS.push(d);
+            DAY_KEYS.push(yyyymmddFromDate(d));
+          }
+
+          var wrap = document.getElementById("days");
+          wrap.innerHTML = "";
+
+          for (var j = 0; j < DAYS.length; j++) {
+            (function (idx) {
+              var d2 = DAYS[idx];
+              var key = DAY_KEYS[idx];
+
+              var a = document.createElement("a");
+              a.href = "#";
+              a.className = "daybtn";
+              a.setAttribute("data-day", key);
+              a.innerHTML = "<span class='mono'>" + dayNameSl(d2) + " " + ddmmFromDate(d2) + "</span>";
+
+              a.onclick = function (ev) {
+                if (ev && ev.preventDefault) ev.preventDefault();
+                selectDay(key);
+                return false;
+              };
+
+              wrap.appendChild(a);
+            })(j);
+          }
+        }
+
+        function setActiveButton(dayKey) {
+          var wrap = document.getElementById("days");
+          var links = wrap.getElementsByTagName("a");
+          for (var i = 0; i < links.length; i++) {
+            var k = links[i].getAttribute("data-day");
+            links[i].className = "daybtn" + (k === dayKey ? " active" : "");
+          }
+        }
+
+        function selectDay(dayKey) {
+          selectedDay = dayKey;
+          setActiveButton(dayKey);
+
+          var idx = -1;
+          for (var i = 0; i < DAY_KEYS.length; i++) {
+            if (DAY_KEYS[i] === dayKey) { idx = i; break; }
+          }
+
+          var title = document.getElementById("selTitle");
+          var meta = document.getElementById("selMeta");
+          if (idx >= 0) {
+            title.innerHTML = "Dan: " + htmlEscape(dayNameSl(DAYS[idx]) + " " + ddmmFromDate(DAYS[idx]));
+            meta.innerHTML = "Key: <span class='mono'>" + htmlEscape(dayKey) + "</span>";
+          } else {
+            title.innerHTML = "Dan: " + htmlEscape(dayKey);
+            meta.innerHTML = "";
+          }
+
+          renderForSelectedDay();
+        }
+
+        function htmlEscape(s) {
+          return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        }
+
+        function renderForSelectedDay() {
+          var tbl = document.getElementById("tbl");
+          var tbody = document.getElementById("tbody");
+          var empty = document.getElementById("empty");
+
+          tbody.innerHTML = "";
+          tbl.style.display = "none";
+          empty.style.display = "none";
+
+          if (!routeData) {
+            empty.style.display = "block";
+            empty.innerHTML = "No data loaded.";
+            return;
+          }
+          if (!selectedDay) {
+            empty.style.display = "block";
+            empty.innerHTML = "Select a day above.";
+            return;
+          }
+
+          var rows = [];
+          for (var i = 0; i < routeData.length; i++) {
+            var e = routeData[i];
+            var dates = e.dates || [];
+            var ok = false;
+            for (var j = 0; j < dates.length; j++) {
+              if (dates[j] === selectedDay) { ok = true; break; }
+            }
+            if (ok) rows.push(e);
+          }
+
+          rows.sort(function (a, b) {
+            var da = timeToSeconds(a.dep);
+            var db = timeToSeconds(b.dep);
+            if (da !== db) return da - db;
+            var aa = timeToSeconds(a.arr);
+            var ab = timeToSeconds(b.arr);
+            if (aa !== ab) return aa - ab;
+            var agA = (a.ag || "");
+            var agB = (b.ag || "");
+            return agA < agB ? -1 : (agA > agB ? 1 : 0);
+          });
+
+          if (!rows.length) {
+            empty.style.display = "block";
+            empty.innerHTML = "Ni voženj.";
+            return;
+          }
+
+          for (var k = 0; k < rows.length; k++) {
+            var tr = document.createElement("tr");
+
+            var td1 = document.createElement("td");
+            td1.className = "time mono";
+            td1.innerHTML = htmlEscape(rows[k].dep || "—");
+
+            var td2 = document.createElement("td");
+            td2.className = "time mono";
+            td2.innerHTML = htmlEscape(rows[k].arr || "—");
+
+            var td3 = document.createElement("td");
+            td3.innerHTML = htmlEscape(rows[k].ag || "—");
+
+            tr.appendChild(td1);
+            tr.appendChild(td2);
+            tr.appendChild(td3);
+            tbody.appendChild(tr);
+          }
+
+          tbl.style.display = "table";
+        }
+
+        function loadSample() {
+          routeData = [
+            { dep: "05:18:00", arr: "05:35:00", ag: "Nomago", dates: [DAY_KEYS[0], DAY_KEYS[1], DAY_KEYS[2]] },
+            { dep: "06:05:00", arr: "06:22:00", ag: "Nomago", dates: [DAY_KEYS[0], DAY_KEYS[3]] },
+            { dep: "07:10:00", arr: "07:30:00", ag: "Arriva", dates: [DAY_KEYS[0]] },
+            { dep: "12:45:00", arr: "13:05:00", ag: "Arriva", dates: [DAY_KEYS[1], DAY_KEYS[2]] },
+            { dep: "18:20:00", arr: "18:40:00", ag: "Nomago", dates: [DAY_KEYS[2]] }
+          ];
+          setStatus("sample loaded (click a day)", "ok");
+          if (!selectedDay) selectDay(DAY_KEYS[0]); else renderForSelectedDay();
+        }
+
+        function loadOutJson() {
+          setStatus("loading out.json...", "warn");
+
+          function ok(jsonText) {
+            try {
+              var obj = JSON.parse(jsonText);
+
+              // Pick first route in the structure: data[from][to] -> entries
+              var fromKey = null, toKey = null, entries = null;
+
+              for (var f in obj) { fromKey = f; break; }
+              if (!fromKey) throw new Error("out.json is empty");
+              for (var t in obj[fromKey]) { toKey = t; break; }
+              if (!toKey) throw new Error("out.json has no routes under first key");
+              entries = obj[fromKey][toKey];
+              if (!entries || !entries.length) throw new Error("no entries in first route");
+
+              // Map to minimal structure for this test
+              var arr = [];
+              for (var i = 0; i < entries.length; i++) {
+                arr.push({
+                  dep: (entries[i].departure_time || ""),
+                  arr: (entries[i].arrival_time || ""),
+                  ag: (entries[i].agency_name || ""),
+                  dates: (entries[i].dates || [])
+                });
+              }
+
+              routeData = arr;
+              setStatus("out.json loaded (using first route only). Click a day.", "ok");
+              if (!selectedDay) selectDay(DAY_KEYS[0]); else renderForSelectedDay();
+            } catch (e) {
+              setStatus("failed to parse out.json: " + (e && e.message ? e.message : String(e)), "err");
+            }
+          }
+
+          function fail(msg) {
+            setStatus("failed to load out.json: " + msg, "err");
+          }
+
+          // Prefer fetch if present; fallback to XHR for older browsers
+          if (typeof fetch === "function") {
+            fetch("./out.json", { cache: "no-store" })
+              .then(function (r) {
+                if (!r || !r.ok) throw new Error("HTTP " + (r ? r.status : "?"));
+                return r.text();
+              })
+              .then(ok)
+              .catch(function (e) { fail(e && e.message ? e.message : String(e)); });
+            return;
+          }
+
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", "./out.json", true);
+          xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) return;
+            if (xhr.status >= 200 && xhr.status < 300) return ok(xhr.responseText);
+            fail("HTTP " + xhr.status);
+          };
+          try { xhr.send(null); } catch (e2) { fail(String(e2)); }
+        }
+
+        initDays();
+
+        document.getElementById("btnSample").onclick = function () { loadSample(); };
+        document.getElementById("btnOutJson").onclick = function () { loadOutJson(); };
+
+        setStatus("JS loaded. Click “Load sample data” then tap a day.", "ok");
+      })();
+    </script>
+  </body>
+</html>
