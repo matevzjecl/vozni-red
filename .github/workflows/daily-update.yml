@@ -38,25 +38,28 @@ jobs:
         run: |
           set -e
 
-          if [ ! -f "$GTFS_OUT" ]; then
-            echo "GTFS not changed (no zip downloaded). Nothing to do."
-            exit 0
+          if [ -f "$GTFS_OUT" ]; then
+            rm -rf gtfs_tmp
+            mkdir -p gtfs_tmp
+
+            unzip -q "$GTFS_OUT" -d gtfs_tmp
+
+            cp scripts/direct_timetables.py gtfs_tmp/direct_timetables.py
+            if [ -f type_mappings.txt ]; then cp type_mappings.txt gtfs_tmp/type_mappings.txt; fi
+
+            python gtfs_tmp/direct_timetables.py > gtfs_tmp/out.json
+            python scripts/build_pages.py gtfs_tmp/out.json
+
+            rm -rf gtfs_tmp
+            rm -f "$GTFS_OUT"
+          else
+            echo "GTFS not changed (no zip downloaded). Rebuilding HTML from existing out.json."
+            if [ ! -f out.json ]; then
+              echo "No out.json in repo. Nothing to rebuild."
+              exit 0
+            fi
+            python scripts/build_pages.py out.json
           fi
-
-          rm -rf gtfs_tmp
-          mkdir -p gtfs_tmp
-
-          unzip -q "$GTFS_OUT" -d gtfs_tmp
-
-          cp scripts/direct_timetables.py gtfs_tmp/direct_timetables.py
-          if [ -f type_mappings.txt ]; then cp type_mappings.txt gtfs_tmp/type_mappings.txt; fi
-
-          python gtfs_tmp/direct_timetables.py > gtfs_tmp/out.json
-
-          python scripts/build_pages.py gtfs_tmp/out.json
-
-          rm -rf gtfs_tmp
-          rm -f "$GTFS_OUT"
 
       - name: Commit & push (if changed)
         run: |
