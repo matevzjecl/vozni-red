@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# scripts/build_pages.py
 import json
 import html
 import os
@@ -91,12 +90,28 @@ def delete_old_route_pages(out_dir: str):
             os.remove(p)
 
 
+def resolve_input_path() -> str:
+    if len(sys.argv) >= 2 and (sys.argv[1] or "").strip():
+        return sys.argv[1].strip()
+
+    envp = (os.environ.get("OUT_JSON") or "").strip()
+    if envp:
+        return envp
+
+    for cand in ("gtfs_tmp/out.json", "out.json"):
+        if os.path.exists(cand):
+            return cand
+
+    return "gtfs_tmp/out.json"
+
+
 def main():
-    if len(sys.argv) < 2:
+    src_out_json = resolve_input_path()
+    if not os.path.exists(src_out_json):
+        print(f"Missing out.json: {src_out_json}", file=sys.stderr)
         print("Usage: python scripts/build_pages.py <path-to-out.json>", file=sys.stderr)
         sys.exit(2)
 
-    src_out_json = sys.argv[1]
     out_dir = os.getcwd()
 
     with open(src_out_json, "r", encoding="utf-8") as f:
