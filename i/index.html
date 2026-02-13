@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="sl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Vozni redi (interaktivno)</title>
+    <style>
+      body { font-family: sans-serif; margin: 0; padding: 12px; }
+      a { color: inherit; }
+      .toplinks a { margin-right: 12px; }
+      .bar { border: 1px solid #ddd; padding: 10px; margin: 10px 0; }
+      .row { margin: 8px 0; }
+      label { display: inline-block; min-width: 70px; }
+      select, input { font-size: 16px; padding: 6px; max-width: 100%; }
+      button { font-size: 16px; padding: 8px 10px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .muted { opacity: 0.7; }
+      .ok { color: #0a0; }
+      .warn { color: #a60; }
+      .err { color: #a00; }
+      .days { white-space: nowrap; overflow-x: auto; padding: 6px 0; }
+      .daybtn {
+        display: inline-block; margin: 0 6px 6px 0; padding: 10px 10px;
+        border: 1px solid #333; text-decoration: none; color: #000;
+        border-radius: 6px;
+      }
+      .daybtn.active { background: #000; color: #fff; }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+      th, td { border: 1px solid #ccc; padding: 8px; }
+      th { text-align: left; }
+      td.time { white-space: nowrap; }
+      .small { font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="toplinks small">
+      <a href="../index.html">← statično</a>
+      <a href="../routes.html">relacije</a>
+      <a href="../out.json">out.json</a>
+    </div>
+
+    <h1>Vozni redi (interaktivno)</h1>
+
+    <noscript>
+      <p class="err"><b>JavaScript je izklopljen.</b> Ta stran ga potrebuje.</p>
+    </noscript>
+
+    <div class="bar">
+      <div id="status" class="small muted">Status: nalagam…</div>
+
+      <div class="row">
+        <label for="q">Išči:</label>
+        <input id="q" type="text" placeholder="npr. Ljubljana" />
+      </div>
+
+      <div class="row">
+        <label for="from">Od:</label>
+        <select id="from"></select>
+      </div>
+
+      <div class="row">
+        <label for="to">Do:</label>
+        <select id="to"></select>
+      </div>
+
+      <div class="row">
+        <button id="btnShow" type="button">Prikaži</button>
+        <span class="small muted" id="meta"></span>
+      </div>
+
+      <div class="row small muted">
+        Link za deljenje: <span class="mono" id="share"></span>
+      </div>
+    </div>
+
+    <div class="bar">
+      <b id="routeTitle">Izberi relacijo</b>
+      <div class="small muted" id="routeHint">Nato izberi dan spodaj.</div>
+
+      <div id="days" class="days"></div>
+
+      <div id="empty" class="muted" style="display:none; padding-top:10px;">Ni voženj.</div>
+
+      <table id="tbl" style="display:none">
+        <thead>
+          <tr>
+            <th>Odhod</th>
+            <th>Prihod</th>
+            <th>Prevoznik</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <script>
+      (function () {
+        function pad2(n) { return (n < 10 ? "0" : "") + n; }
+        function yyyymmdd(d) { return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()); }
+        function ddmm(d) { return pad2(d.getDate()) + ". " + pad2(d.getMonth() + 1) + "."; }
+        function dayNameSl(d) { var n = ["ned","pon","tor","sre","čet","pet","sob"]; return n[d.getDay()]; }
+
+        function htmlEscape(s) {
+          return String(s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+
+        function timeToSeconds(t) {
+          t = (t || "").replace(/\s+/g, "");
+          if (!t) return 1e9;
+          var p = t.split(":");
+          var h = parseInt(p[0], 10);
+          var m = parseInt(p[1] || "0", 10);
+          var s = parseInt(p[2] || "0", 10);
+          if (isNaN(h) || isNaN(m) || isNaN(s)) return 1e9;
+          return h * 3600 + m * 60 + s;
+        }
+
+        function setStatus(text, cls) {
+          var el = document.getElementById("status");
+          el.className = "small " + (cls || "muted");
+          el.innerHTML = "Status: " + text;
+        }
+
+        function getHashParams() {
+          var h = (location.hash || "").replace(/^#/, "");
+          var out = {};
+          if (!h) return out;
+          var parts = h.split("&");
+          for (var i = 0; i < parts.length; i++) {
+            var kv = parts[i].split("=");
+            if (kv.length < 2) continue;
+            var k = decodeURIComponent(kv[0]);
+            var v = decodeURIComponent(kv.slice(1).join("="));
+            out[k] = v;
+          }
+          return out;
+        }
+
+        function setHashParams(obj) {
+          var parts = [];
+          for (var k in obj) {
+            if (!obj.hasOwnProperty(k)) continue;
+            if (obj[k] == null || obj[k] === "") continue;
+            parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(obj[k]));
+          }
+          location.hash = parts.join("&");
+        }
+
+        function xhrGet(url, cbOk, cbErr) {
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", url, true);
+          xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) return;
+            if (xhr.status >= 200 && xhr.status < 300) return cbOk(xhr.responseText);
+            cbErr("HTTP " + xhr.status);
+          };
+          try { xhr.send(null); } catch (e) { cbErr(String(e)); }
+        }
+
+        var DATA = null;             // out.json object
+        var ORIGINS = [];            // sorted origin names
+        var CURRENT_FROM = null;
+        var CURRENT_TO = null;
+
+        var DAYS = [];
+        var DAY_KEYS = [];
+        var DAY_SET = {};
+        var SELECTED_DAY = null;
+
+        var ROUTE_ENTRIES = null;    // array of entries for selected from->to
+
+        function initDays() {
+          var base = new Date();
+          base.setHours(0,0,0,0);
+
+          DAYS = [];
+          DAY_KEYS = [];
+          DAY_SET = {};
+
+          for (var i = 0; i < 10; i++) {
+            var d = new Date(base.getTime() + i * 86400000);
+            var k = yyyymmdd(d);
+            DAYS.push(d);
+            DAY_KEYS.push(k);
+            DAY_SET[k] = true;
+          }
+
+          renderDayButtons();
+        }
+
+        function renderDayButtons() {
+          var wrap = document.getElementById("days");
+          wrap.innerHTML = "";
+          for (var i = 0; i < DAYS.length; i++) {
+            (function (idx) {
+              var d = DAYS[idx];
+              var k = DAY_KEYS[idx];
+              var a = document.createElement("a");
+              a.href = "#";
+              a.className = "daybtn" + (k === SELECTED_DAY ? " active" : "");
+              a.setAttribute("data-day", k);
+              a.innerHTML = "<span class='mono'>" + htmlEscape(dayNameSl(d) + " " + ddmm(d)) + "</span>";
+              a.onclick = function (ev) {
+                if (ev && ev.preventDefault) ev.preventDefault();
+                SELECTED_DAY = k;
+                renderDayButtons();
+                renderTimetableForDay();
+                updateShare();
+                return false;
+              };
+              wrap.appendChild(a);
+            })(i);
+          }
+        }
+
+        function fillSelect(sel, items, placeholder) {
+          sel.innerHTML = "";
+          if (placeholder) {
+            var opt0 = document.createElement("option");
+            opt0.value = "";
+            opt0.text = placeholder;
+            sel.appendChild(opt0);
+          }
+          for (var i = 0; i < items.length; i++) {
+            var opt = document.createElement("option");
+            opt.value = items[i];
+            opt.text = items[i];
+            sel.appendChild(opt);
+          }
+        }
+
+        function filterOrigins(q) {
+          q = (q || "").toLowerCase().trim();
+          if (!q) return ORIGINS.slice();
+          var out = [];
+          for (var i = 0; i < ORIGINS.length; i++) {
+            if (ORIGINS[i].toLowerCase().indexOf(q) >= 0) out.push(ORIGINS[i]);
+          }
+          return out;
+        }
+
+        function onFromChanged() {
+          var fromSel = document.getElementById("from");
+          var toSel = document.getElementById("to");
+          var from = fromSel.value;
+
+          CURRENT_FROM = from || null;
+          CURRENT_TO = null;
+
+          var tos = [];
+          if (DATA && from && DATA[from]) {
+            for (var k in DATA[from]) { if (DATA[from].hasOwnProperty(k)) tos.push(k); }
+            tos.sort();
+          }
+          fillSelect(toSel, tos, "—");
+
+          ROUTE_ENTRIES = null;
+          document.getElementById("routeTitle").innerHTML = "Izberi relacijo";
+          document.getElementById("routeHint").style.display = "block";
+          document.getElementById("meta").innerHTML = "";
+          renderTimetableForDay();
+          updateShare();
+        }
+
+        function onToChanged() {
+          var toSel = document.getElementById("to");
+          CURRENT_TO = toSel.value || null;
+
+          ROUTE_ENTRIES = null;
+          document.getElementById("routeTitle").innerHTML = "Izberi relacijo";
+          document.getElementById("routeHint").style.display = "block";
+          document.getElementById("meta").innerHTML = "";
+          renderTimetableForDay();
+          updateShare();
+        }
+
+        function selectRoute(from, to) {
+          if (!DATA || !from || !to || !DATA[from] || !DATA[from][to]) {
+            ROUTE_ENTRIES = null;
+            document.getElementById("routeTitle").innerHTML = "Izberi relacijo";
+            document.getElementById("routeHint").style.display = "block";
+            renderTimetableForDay();
+            return;
+          }
+
+          ROUTE_ENTRIES = DATA[from][to] || [];
+          document.getElementById("routeTitle").innerHTML = htmlEscape(from + " – " + to);
+          document.getElementById("routeHint").style.display = "none";
+
+          var cnt = ROUTE_ENTRIES.length;
+          document.getElementById("meta").innerHTML = cnt ? ("(" + cnt + " zapisov)") : "(0)";
+
+          if (!SELECTED_DAY) SELECTED_DAY = DAY_KEYS[0];
+          renderDayButtons();
+          renderTimetableForDay();
+          updateShare();
+        }
+
+        function renderTimetableForDay() {
+          var tbl = document.getElementById("tbl");
+          var tbody = document.getElementById("tbody");
+          var empty = document.getElementById("empty");
+
+          tbody.innerHTML = "";
+          tbl.style.display = "none";
+          empty.style.display = "none";
+
+          if (!ROUTE_ENTRIES || !CURRENT_FROM || !CURRENT_TO) {
+            empty.style.display = "block";
+            empty.innerHTML = "Izberi relacijo.";
+            return;
+          }
+          if (!SELECTED_DAY) {
+            empty.style.display = "block";
+            empty.innerHTML = "Izberi dan.";
+            return;
+          }
+
+          // Build unique rows for this day by (dep,arr,agency)
+          var uniq = {};
+          for (var i = 0; i < ROUTE_ENTRIES.length; i++) {
+            var e = ROUTE_ENTRIES[i];
+            var dates = e.dates || [];
+            var ok = false;
+            for (var j = 0; j < dates.length; j++) {
+              if (dates[j] === SELECTED_DAY) { ok = true; break; }
+            }
+            if (!ok) continue;
+
+            var dep = (e.departure_time || "").trim() || "—";
+            var arr = (e.arrival_time || "").trim() || "—";
+            var ag  = (e.agency_name || "").trim() || "—";
+            var key = dep + "|" + arr + "|" + ag;
+            uniq[key] = { dep: dep, arr: arr, ag: ag };
+          }
+
+          var rows = [];
+          for (var k in uniq) { if (uniq.hasOwnProperty(k)) rows.push(uniq[k]); }
+
+          rows.sort(function (a, b) {
+            var da = timeToSeconds(a.dep);
+            var db = timeToSeconds(b.dep);
+            if (da !== db) return da - db;
+            var aa = timeToSeconds(a.arr);
+            var ab = timeToSeconds(b.arr);
+            if (aa !== ab) return aa - ab;
+            return a.ag < b.ag ? -1 : (a.ag > b.ag ? 1 : 0);
+          });
+
+          if (!rows.length) {
+            empty.style.display = "block";
+            empty.innerHTML = "Ni voženj.";
+            return;
+          }
+
+          for (var r = 0; r < rows.length; r++) {
+            var tr = document.createElement("tr");
+
+            var td1 = document.createElement("td");
+            td1.className = "time mono";
+            td1.innerHTML = htmlEscape(rows[r].dep);
+
+            var td2 = document.createElement("td");
+            td2.className = "time mono";
+            td2.innerHTML = htmlEscape(rows[r].arr);
+
+            var td3 = document.createElement("td");
+            td3.innerHTML = htmlEscape(rows[r].ag);
+
+            tr.appendChild(td1);
+            tr.appendChild(td2);
+            tr.appendChild(td3);
+            tbody.appendChild(tr);
+          }
+
+          tbl.style.display = "table";
+        }
+
+        function updateShare() {
+          var share = document.getElementById("share");
+          var obj = {};
+          if (CURRENT_FROM) obj.from = CURRENT_FROM;
+          if (CURRENT_TO) obj.to = CURRENT_TO;
+          if (SELECTED_DAY) obj.day = SELECTED_DAY;
+          var parts = [];
+          for (var k in obj) {
+            if (!obj.hasOwnProperty(k)) continue;
+            parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(obj[k]));
+          }
+          share.innerHTML = htmlEscape("#" + parts.join("&"));
+
+          setHashParams(obj);
+        }
+
+        function applyHashIfAny() {
+          var hp = getHashParams();
+          if (hp.day && DAY_SET[hp.day]) SELECTED_DAY = hp.day;
+
+          var q = document.getElementById("q").value || "";
+          var originList = filterOrigins(q);
+          fillSelect(document.getElementById("from"), originList, "—");
+
+          if (hp.from) {
+            document.getElementById("from").value = hp.from;
+            onFromChanged();
+          }
+          if (hp.to) {
+            document.getElementById("to").value = hp.to;
+            onToChanged();
+          }
+
+          if (hp.from && hp.to) {
+            CURRENT_FROM = hp.from;
+            CURRENT_TO = hp.to;
+            selectRoute(hp.from, hp.to);
+          } else {
+            renderDayButtons();
+            renderTimetableForDay();
+            updateShare();
+          }
+        }
+
+        function loadOutJson() {
+          setStatus("nalagam out.json…", "warn");
+
+          function ok(text) {
+            try {
+              DATA = JSON.parse(text);
+              ORIGINS = [];
+              for (var k in DATA) { if (DATA.hasOwnProperty(k)) ORIGINS.push(k); }
+              ORIGINS.sort();
+
+              initDays();
+
+              var fromSel = document.getElementById("from");
+              var toSel = document.getElementById("to");
+
+              fillSelect(fromSel, ORIGINS, "—");
+              fillSelect(toSel, [], "—");
+
+              setStatus("out.json naložen", "ok");
+              applyHashIfAny();
+            } catch (e) {
+              setStatus("napaka pri JSON: " + (e && e.message ? e.message : String(e)), "err");
+            }
+          }
+
+          function fail(msg) {
+            setStatus("ne morem naložiti out.json: " + msg, "err");
+          }
+
+          // IMPORTANT: project pages path -> ../out.json from /i/
+          var url = "../out.json";
+
+          if (typeof fetch === "function") {
+            fetch(url, { cache: "no-store" })
+              .then(function (r) { if (!r || !r.ok) throw new Error("HTTP " + (r ? r.status : "?")); return r.text(); })
+              .then(ok)
+              .catch(function (e) { fail(e && e.message ? e.message : String(e)); });
+          } else {
+            xhrGet(url, ok, fail);
+          }
+        }
+
+        document.getElementById("q").oninput = function () {
+          if (!DATA) return;
+          var q = document.getElementById("q").value || "";
+          var list = filterOrigins(q);
+          fillSelect(document.getElementById("from"), list, "—");
+          fillSelect(document.getElementById("to"), [], "—");
+          CURRENT_FROM = null;
+          CURRENT_TO = null;
+          ROUTE_ENTRIES = null;
+          document.getElementById("routeTitle").innerHTML = "Izberi relacijo";
+          document.getElementById("routeHint").style.display = "block";
+          renderTimetableForDay();
+          updateShare();
+        };
+
+        document.getElementById("from").onchange = onFromChanged;
+        document.getElementById("to").onchange = onToChanged;
+
+        document.getElementById("btnShow").onclick = function () {
+          var from = document.getElementById("from").value || "";
+          var to = document.getElementById("to").value || "";
+          CURRENT_FROM = from || null;
+          CURRENT_TO = to || null;
+
+          if (!SELECTED_DAY) SELECTED_DAY = DAY_KEYS[0];
+          selectRoute(from, to);
+        };
+
+        window.onhashchange = function () {
+          if (!DATA) return;
+          applyHashIfAny();
+        };
+
+        loadOutJson();
+      })();
+    </script>
+  </body>
+</html>
