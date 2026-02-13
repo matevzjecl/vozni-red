@@ -13,9 +13,6 @@ const path = require("node:path");
 const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { Transform } = require("node:stream");
-const dotenv = require("dotenv");
-
-dotenv.config();
 
 const TOKEN_URL = "https://b2b.nap.si/uc/user/token";
 const GTFS_URL = "https://b2b.nap.si/data/b2b.gtfs";
