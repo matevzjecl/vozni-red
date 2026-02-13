@@ -38,6 +38,11 @@ jobs:
         run: |
           set -e
 
+          if [ ! -f "$GTFS_OUT" ]; then
+            echo "GTFS not changed (no zip downloaded). Nothing to do."
+            exit 0
+          fi
+
           rm -rf gtfs_tmp
           mkdir -p gtfs_tmp
 
@@ -48,147 +53,7 @@ jobs:
 
           python gtfs_tmp/direct_timetables.py > gtfs_tmp/out.json
 
-          find . -maxdepth 1 -type f -name "*.html" ! -name "index.html" ! -name "routes.html" -delete
-
-          python - <<'PY'
-          import json, html, unicodedata, os
-
-          def slugify(s: str) -> str:
-              s = s.replace("–", "-").replace("—", "-")
-              s = unicodedata.normalize("NFKD", s)
-              s = "".join(ch for ch in s if not unicodedata.combining(ch))
-              s = s.lower().strip()
-
-              out = []
-              for ch in s:
-                  if ch.isalnum():
-                      out.append(ch)
-                  elif ch in (" ", "-", "_"):
-                      out.append("-")
-                  else:
-                      out.append("-")
-
-              slug = "".join(out)
-              while "--" in slug:
-                  slug = slug.replace("--", "-")
-              return slug.strip("-") or "route"
-
-          with open("gtfs_tmp/out.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
-
-          routes = []
-          for frm, tos in data.items():
-              for to, entries in tos.items():
-                  routes.append((frm, to, entries))
-
-          routes.sort(key=lambda x: (x[0], x[1]))
-
-          def route_filename(frm: str, to: str) -> str:
-              return f"{slugify(frm)}-{slugify(to)}.html"
-
-          for frm, to, entries in routes:
-              fn = route_filename(frm, to)
-
-              uniq = {}
-              for e in entries:
-                  dep = (e.get("departure_time") or "").strip() or "—"
-                  arr = (e.get("arrival_time") or "").strip() or "—"
-                  ag  = (e.get("agency_name") or "").strip() or "—"
-                  key = (dep, arr, ag)
-                  if key not in uniq:
-                      uniq[key] = True
-
-              rows = sorted(list(uniq.keys()), key=lambda r: (r[0], r[1], r[2]))
-
-              tr = []
-              for dep, arr, ag in rows:
-                  tr.append(
-                      "<tr>"
-                      f"<td>{html.escape(dep)}</td>"
-                      f"<td>{html.escape(arr)}</td>"
-                      f"<td>{html.escape(ag)}</td>"
-                      "</tr>"
-                  )
-
-              body_rows = "".join(tr) if tr else (
-                  "<tr><td>—</td><td>—</td><td>—</td></tr>"
-              )
-
-              page = f"""<!doctype html>
-          <html lang="sl">
-            <head>
-              <meta charset="utf-8" />
-              <meta name="viewport" content="width=device-width,initial-scale=1" />
-              <title>{html.escape(frm)} – {html.escape(to)}</title>
-            </head>
-            <body>
-              <p><a href="./">← Nazaj</a></p>
-
-              <h1>{html.escape(frm)} – {html.escape(to)}</h1>
-
-              <table border="1" cellpadding="6" cellspacing="0">
-                <thead>
-                  <tr>
-                    <th>Odhod</th>
-                    <th>Prihod</th>
-                    <th>Prevoznik</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {body_rows}
-                </tbody>
-              </table>
-            </body>
-          </html>
-          """
-              with open(fn, "w", encoding="utf-8", newline="\n") as f:
-                  f.write(page)
-
-          li = []
-          for frm, to, _ in routes:
-              fn = route_filename(frm, to)
-              li.append(f'<li><a href="./{html.escape(fn)}">{html.escape(frm)} – {html.escape(to)}</a></li>')
-
-          routes_html = f"""<!doctype html>
-          <html lang="sl">
-            <head>
-              <meta charset="utf-8" />
-              <meta name="viewport" content="width=device-width,initial-scale=1" />
-              <title>Relacije</title>
-            </head>
-            <body>
-              <p><a href="./">← Nazaj</a></p>
-              <h1>Relacije</h1>
-              <ul>
-                {''.join(li) if li else '<li>Ni relacij.</li>'}
-              </ul>
-            </body>
-          </html>
-          """
-          with open("routes.html", "w", encoding="utf-8", newline="\n") as f:
-              f.write(routes_html)
-
-          index_html = f"""<!doctype html>
-          <html lang="sl">
-            <head>
-              <meta charset="utf-8" />
-              <meta name="viewport" content="width=device-width,initial-scale=1" />
-              <title>Vozni redi</title>
-            </head>
-            <body>
-              <h1>Vozni redi</h1>
-
-              <p><a href="./routes.html">Vse relacije</a></p>
-
-              <ul>
-                {''.join(li) if li else '<li>Ni relacij.</li>'}
-              </ul>
-            </body>
-          </html>
-          """
-          with open("index.html", "w", encoding="utf-8", newline="\n") as f:
-              f.write(index_html)
-          PY
+          python scripts/build_pages.py gtfs_tmp/out.json
 
           rm -rf gtfs_tmp
           rm -f "$GTFS_OUT"
