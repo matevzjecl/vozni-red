@@ -48,7 +48,7 @@ jobs:
 
           unzip -q "$GTFS_OUT" -d gtfs_tmp
 
-          cp direct_timetables.py gtfs_tmp/direct_timetables.py
+          cp scripts/direct_timetables.py gtfs_tmp/direct_timetables.py
           if [ -f type_mappings.txt ]; then cp type_mappings.txt gtfs_tmp/type_mappings.txt; fi
 
           python gtfs_tmp/direct_timetables.py > gtfs_tmp/out.json
