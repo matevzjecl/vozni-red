@@ -17,8 +17,8 @@ const { Transform } = require("node:stream");
 const TOKEN_URL = "https://b2b.nap.si/uc/user/token";
 const GTFS_URL = "https://b2b.nap.si/data/b2b.gtfs";
 
-const USERNAME = process.env.NAP_USERNAME;
-const PASSWORD = process.env.NAP_PASSWORD;
+const USERNAME = process.env.NAP_USERNAME ?? 'matevz.jecl@gmail.com';
+const PASSWORD = process.env.NAP_PASSWORD ?? '4b5E?v#87@/£+v>Q1c%?W*pmvH';
 const OUT_FILE = process.env.GTFS_OUT || "gtfs.zip";
 const CACHE_FILE = ".nap-cache.json";
 
@@ -155,10 +155,7 @@ async function downloadToFileWithProgress(res, outFile) {
   let lastBytes = 0;
   let lastT = startedAt;
 
-  log(
-    "Downloading GTFS...",
-    total ? `size=${fmtBytes(total)}` : "(unknown size)",
-  );
+  log("Downloading GTFS...", total ? `size=${fmtBytes(total)}` : "(unknown size)");
 
   const progress = new Transform({
     transform(chunk, _enc, cb) {
@@ -195,15 +192,26 @@ async function downloadToFileWithProgress(res, outFile) {
   const finishedAt = Date.now();
   const elapsed = (finishedAt - startedAt) / 1000;
   const avg = downloaded / Math.max(0.001, elapsed);
-  log(`Download complete: ${outFile} (${fmtBytes(downloaded)} in ${elapsed.toFixed(1)}s, avg ${fmtBytes(avg)}/s)`);
+  log(
+    `Download complete: ${outFile} (${fmtBytes(downloaded)} in ${elapsed.toFixed(1)}s, avg ${fmtBytes(avg)}/s)`,
+  );
 }
 
 async function downloadGtfs(accessToken, conditionalHeaders, cache) {
-  log("Checking if GTFS changed (HEAD)...", conditionalHeaders && Object.keys(conditionalHeaders).length ? "(conditional)" : "");
+  log(
+    "Checking if GTFS changed (HEAD)...",
+    conditionalHeaders && Object.keys(conditionalHeaders).length ? "(conditional)" : "",
+  );
+
   let head = await fetchGtfs(accessToken, "HEAD", conditionalHeaders);
 
   if (head.status === 401) return { ok: false, status: 401, notModified: false };
-  if (head.status === 405 || head.status === 501) head = null;
+
+  // Some servers block HEAD (403) but allow GET; treat as "HEAD not supported"
+  if (head.status === 403 || head.status === 405 || head.status === 501) {
+    log(`HEAD not supported/blocked (status=${head.status}). Will use GET.`);
+    head = null;
+  }
 
   if (head) {
     const h = pickHeaders(head.headers);
@@ -231,18 +239,17 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
     log("HEAD not supported. Will use GET directly.");
   }
 
-  log("Fetching GTFS (GET)...", conditionalHeaders && Object.keys(conditionalHeaders).length ? "(conditional)" : "");
+  log(
+    "Fetching GTFS (GET)...",
+    conditionalHeaders && Object.keys(conditionalHeaders).length ? "(conditional)" : "",
+  );
   const res = await fetchGtfs(accessToken, "GET", conditionalHeaders);
 
   if (res.status === 401) return { ok: false, status: 401, notModified: false };
 
   if (res.status === 304) {
     const h = pickHeaders(res.headers);
-    log(
-      `GET status=304 (not modified)`,
-      h.etag ? `ETag=${h.etag}` : "",
-      h.lastModified ? `Last-Modified=${h.lastModified}` : "",
-    );
+    log(`GET status=304 (not modified)`, h.etag ? `ETag=${h.etag}` : "", h.lastModified ? `Last-Modified=${h.lastModified}` : "");
     return { ok: true, status: 304, notModified: true, headers: h };
   }
 
@@ -270,11 +277,7 @@ async function main() {
   const conditionalHeaders = buildConditionalHeaders(cache);
 
   if (cache?.etag || cache?.lastModified) {
-    log(
-      "Cache loaded:",
-      cache.etag ? `ETag=${cache.etag}` : "",
-      cache.lastModified ? `Last-Modified=${cache.lastModified}` : "",
-    );
+    log("Cache loaded:", cache.etag ? `ETag=${cache.etag}` : "", cache.lastModified ? `Last-Modified=${cache.lastModified}` : "");
   } else {
     log("No cache present yet (first run).");
   }
