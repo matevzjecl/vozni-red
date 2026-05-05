@@ -351,36 +351,38 @@ def main():
 
         for i in range(len(seq) - 1):
             o = seq[i]
-            d = seq[i + 1]
 
-            if o.stop_type is not None and d.stop_type is not None:
-                if o.stop_type != d.stop_type:
-                    continue
-                if rt and rt != expected_route_type(o.stop_type):
-                    continue
+            for j in range(i + 1, len(seq)):
+                d = seq[j]
 
-            dep = o.dep or o.arr or ""
-            arr = d.arr or d.dep or ""
+                if o.stop_type is not None and d.stop_type is not None:
+                    if o.stop_type != d.stop_type:
+                        continue
+                    if rt and rt != expected_route_type(o.stop_type):
+                        continue
 
-            entry = {
-                "from_stop_id": o.stop_id,
-                "to_stop_id": d.stop_id,
-                "from_stop_type": o.stop_type,
-                "to_stop_type": d.stop_type,
-                "departure_time": dep,
-                "arrival_time": arr,
-                "trip_id": t.trip_id,
-                "service_id": t.service_id,
-                "trip_headsign": t.trip_headsign,
-                "route_id": t.route_id,
-                "route_type": rt,
-                "agency_name": agency_name,
-                "route_short_name": route_short,
-                "route_long_name": route_long,
-                "dates": svc_dates,
-            }
+                dep = o.dep or o.arr or ""
+                arr = d.arr or d.dep or ""
 
-            result.setdefault(o.station, {}).setdefault(d.station, []).append(entry)
+                entry = {
+                    "from_stop_id": o.stop_id,
+                    "to_stop_id": d.stop_id,
+                    "from_stop_type": o.stop_type,
+                    "to_stop_type": d.stop_type,
+                    "departure_time": dep,
+                    "arrival_time": arr,
+                    "trip_id": t.trip_id,
+                    "service_id": t.service_id,
+                    "trip_headsign": t.trip_headsign,
+                    "route_id": t.route_id,
+                    "route_type": rt,
+                    "agency_name": agency_name,
+                    "route_short_name": route_short,
+                    "route_long_name": route_long,
+                    "dates": svc_dates,
+                }
+
+                result.setdefault(o.station, {}).setdefault(d.station, []).append(entry)
 
     for frm in result:
         for to in result[frm]:

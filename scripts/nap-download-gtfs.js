@@ -17,8 +17,8 @@ const { Transform } = require("node:stream");
 const TOKEN_URL = "https://b2b.nap.si/uc/user/token";
 const GTFS_URL = "https://b2b.nap.si/data/b2b.gtfs";
 
-const USERNAME = process.env.NAP_USERNAME ?? 'matevz.jecl@gmail.com';
-const PASSWORD = process.env.NAP_PASSWORD ?? '4b5E?v#87@/£+v>Q1c%?W*pmvH';
+const USERNAME = process.env.NAP_USERNAME;
+const PASSWORD = process.env.NAP_PASSWORD;
 const OUT_FILE = process.env.GTFS_OUT || "gtfs.zip";
 const CACHE_FILE = ".nap-cache.json";
 
