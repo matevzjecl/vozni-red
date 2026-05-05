@@ -3,16 +3,40 @@ name: Daily timetable update
 on:
   schedule:
     - cron: "0 4 * * *"
+
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force fresh GTFS download and rebuild out.json"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+  push:
+    branches:
+      - main
+    paths:
+      - "type_mappings.txt"
+      - "out.json"
+      - "scripts/direct_timetables.py"
+      - "scripts/build_pages.py"
+      - "scripts/nap-download-gtfs.js"
 
 permissions:
   contents: write
 
 jobs:
   nap_gtfs:
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -22,11 +46,57 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Decide rebuild mode
+        id: rebuild
+        shell: bash
+        run: |
+          set -e
+
+          FORCE_REBUILD="false"
+
+          # 1. Manual force rebuild
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_rebuild }}" = "true" ]; then
+            echo "Manual force rebuild requested."
+            FORCE_REBUILD="true"
+          fi
+
+          # 2. Rebuild on type_mappings / script / out.json change
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BEFORE="${{ github.event.before }}"
+
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES="$(git diff --name-only "$BEFORE" HEAD || true)"
+            else
+              CHANGED_FILES="$(git diff --name-only HEAD~1 HEAD || true)"
+            fi
+
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+
+            if echo "$CHANGED_FILES" | grep -E '^(type_mappings\.txt|out\.json|scripts/direct_timetables\.py|scripts/build_pages\.py|scripts/nap-download-gtfs\.js)$'; then
+              echo "Relevant file changed. Forcing rebuild."
+              FORCE_REBUILD="true"
+            fi
+          fi
+
+          # 3. Rebuild if out.json is missing, empty, or invalid
+          if [ ! -s out.json ]; then
+            echo "out.json is missing or empty. Forcing rebuild."
+            FORCE_REBUILD="true"
+          elif ! python -m json.tool out.json > /dev/null 2>&1; then
+            echo "out.json is invalid JSON. Forcing rebuild."
+            FORCE_REBUILD="true"
+          fi
+
+          echo "force_rebuild=$FORCE_REBUILD" >> "$GITHUB_OUTPUT"
+          echo "FORCE_REBUILD=$FORCE_REBUILD"
+
       - name: Download GTFS (NAP)
         env:
           NAP_USERNAME: ${{ secrets.NAP_USERNAME }}
           NAP_PASSWORD: ${{ secrets.NAP_PASSWORD }}
           GTFS_OUT: gtfs.zip
+          FORCE_DOWNLOAD: ${{ steps.rebuild.outputs.force_rebuild }}
         run: node scripts/nap-download-gtfs.js
 
       - name: Extract + build out.json + generate HTML pages
@@ -35,33 +105,58 @@ jobs:
           LANG: "en_US.UTF-8"
           LC_ALL: "en_US.UTF-8"
           GTFS_OUT: gtfs.zip
+          FORCE_REBUILD: ${{ steps.rebuild.outputs.force_rebuild }}
         run: |
           set -e
 
           if [ -f "$GTFS_OUT" ]; then
+            echo "GTFS zip available. Building fresh out.json and HTML pages."
+
             rm -rf gtfs_tmp
             mkdir -p gtfs_tmp
 
             unzip -q "$GTFS_OUT" -d gtfs_tmp
 
             cp scripts/direct_timetables.py gtfs_tmp/direct_timetables.py
-            if [ -f type_mappings.txt ]; then cp type_mappings.txt gtfs_tmp/type_mappings.txt; fi
+
+            if [ -f type_mappings.txt ]; then
+              cp type_mappings.txt gtfs_tmp/type_mappings.txt
+            fi
 
             python gtfs_tmp/direct_timetables.py > gtfs_tmp/out.json
-            python scripts/build_pages.py gtfs_tmp/out.json
+
+            if [ ! -s gtfs_tmp/out.json ]; then
+              echo "Generated gtfs_tmp/out.json is empty."
+              exit 1
+            fi
+
+            python -m json.tool gtfs_tmp/out.json > /dev/null
+
+            cp gtfs_tmp/out.json out.json
+
+            python scripts/build_pages.py out.json
 
             rm -rf gtfs_tmp
             rm -f "$GTFS_OUT"
+
+          elif [ "$FORCE_REBUILD" = "true" ]; then
+            echo "Force rebuild was requested, but no GTFS zip was downloaded."
+            echo "Check that scripts/nap-download-gtfs.js supports FORCE_DOWNLOAD=true."
+            exit 1
+
           else
-            echo "GTFS not changed (no zip downloaded). Rebuilding HTML from existing out.json."
-            if [ ! -f out.json ]; then
-              echo "No out.json in repo. Nothing to rebuild."
-              exit 0
+            echo "GTFS not changed. Rebuilding HTML from existing out.json."
+
+            if [ ! -s out.json ]; then
+              echo "No usable out.json in repo. Nothing to rebuild."
+              exit 1
             fi
+
+            python -m json.tool out.json > /dev/null
             python scripts/build_pages.py out.json
           fi
 
-      - name: Commit & push (if changed)
+      - name: Commit & push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

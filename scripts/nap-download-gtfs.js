@@ -7,6 +7,7 @@
 // Env:
 //   NAP_USERNAME, NAP_PASSWORD (required)
 //   GTFS_OUT (optional, default gtfs.zip)
+//   FORCE_DOWNLOAD (optional, "true" / "1" / "yes" = ignore cache and download anyway)
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -21,6 +22,10 @@ const USERNAME = process.env.NAP_USERNAME;
 const PASSWORD = process.env.NAP_PASSWORD;
 const OUT_FILE = process.env.GTFS_OUT || "gtfs.zip";
 const CACHE_FILE = ".nap-cache.json";
+
+const FORCE_DOWNLOAD = ["true", "1", "yes"].includes(
+  String(process.env.FORCE_DOWNLOAD || "").toLowerCase(),
+);
 
 if (!USERNAME || !PASSWORD) {
   console.error("Missing env vars: NAP_USERNAME and/or NAP_PASSWORD");
@@ -69,13 +74,16 @@ function buildConditionalHeaders(cache) {
 
 function fmtBytes(n) {
   if (!Number.isFinite(n) || n <= 0) return "0 B";
+
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let x = n;
+
   while (x >= 1024 && i < units.length - 1) {
     x /= 1024;
     i++;
   }
+
   return `${x.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
 }
 
@@ -95,6 +103,7 @@ async function postToken(form) {
   });
 
   const text = await res.text();
+
   let json;
   try {
     json = JSON.parse(text);
@@ -107,7 +116,10 @@ async function postToken(form) {
     throw new Error(`Token request failed (${res.status}): ${msg}`);
   }
 
-  if (!json?.access_token) throw new Error("Token response missing access_token");
+  if (!json?.access_token) {
+    throw new Error("Token response missing access_token");
+  }
+
   return {
     access_token: json.access_token,
     refresh_token: json.refresh_token || null,
@@ -118,21 +130,25 @@ async function postToken(form) {
 
 async function getTokenWithPassword() {
   log("Requesting access token (password grant)...");
+
   const tok = await postToken({
     grant_type: "password",
     username: USERNAME,
     password: PASSWORD,
   });
+
   log("Got access token.", tok.expires_in != null ? `expires_in=${tok.expires_in}` : "");
   return tok;
 }
 
 async function refreshAccessToken(refreshToken) {
   log("Refreshing access token...");
+
   const tok = await postToken({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
   });
+
   log("Refreshed access token.", tok.expires_in != null ? `expires_in=${tok.expires_in}` : "");
   return tok;
 }
@@ -151,6 +167,7 @@ async function fetchGtfs(accessToken, method, extraHeaders) {
 async function downloadToFileWithProgress(res, outFile) {
   const total = Number(res.headers.get("content-length") || 0);
   const startedAt = Date.now();
+
   let downloaded = 0;
   let lastBytes = 0;
   let lastT = startedAt;
@@ -162,6 +179,7 @@ async function downloadToFileWithProgress(res, outFile) {
       downloaded += chunk.length;
 
       const t = Date.now();
+
       if (t - lastT >= 2000) {
         const dt = (t - lastT) / 1000;
         const dBytes = downloaded - lastBytes;
@@ -192,12 +210,15 @@ async function downloadToFileWithProgress(res, outFile) {
   const finishedAt = Date.now();
   const elapsed = (finishedAt - startedAt) / 1000;
   const avg = downloaded / Math.max(0.001, elapsed);
+
   log(
-    `Download complete: ${outFile} (${fmtBytes(downloaded)} in ${elapsed.toFixed(1)}s, avg ${fmtBytes(avg)}/s)`,
+    `Download complete: ${outFile} (${fmtBytes(downloaded)} in ${elapsed.toFixed(
+      1,
+    )}s, avg ${fmtBytes(avg)}/s)`,
   );
 }
 
-async function downloadGtfs(accessToken, conditionalHeaders, cache) {
+async function downloadGtfs(accessToken, conditionalHeaders) {
   log(
     "Checking if GTFS changed (HEAD)...",
     conditionalHeaders && Object.keys(conditionalHeaders).length ? "(conditional)" : "",
@@ -205,9 +226,10 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
 
   let head = await fetchGtfs(accessToken, "HEAD", conditionalHeaders);
 
-  if (head.status === 401) return { ok: false, status: 401, notModified: false };
+  if (head.status === 401) {
+    return { ok: false, status: 401, notModified: false };
+  }
 
-  // Some servers block HEAD (403) but allow GET; treat as "HEAD not supported"
   if (head.status === 403 || head.status === 405 || head.status === 501) {
     log(`HEAD not supported/blocked (status=${head.status}). Will use GET.`);
     head = null;
@@ -215,6 +237,7 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
 
   if (head) {
     const h = pickHeaders(head.headers);
+
     log(
       `HEAD status=${head.status}`,
       h.etag ? `ETag=${h.etag}` : "",
@@ -232,9 +255,6 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
       const body = await head.text().catch(() => "");
       throw new Error(`GTFS HEAD failed (${head.status}): ${body || "no body"}`);
     }
-
-    // If server doesn't send ETag/Last-Modified at all, we still continue with GET.
-    // But if it does, and matches cache, some servers may still return 200 to HEAD; GET may return 304.
   } else {
     log("HEAD not supported. Will use GET directly.");
   }
@@ -243,13 +263,22 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
     "Fetching GTFS (GET)...",
     conditionalHeaders && Object.keys(conditionalHeaders).length ? "(conditional)" : "",
   );
+
   const res = await fetchGtfs(accessToken, "GET", conditionalHeaders);
 
-  if (res.status === 401) return { ok: false, status: 401, notModified: false };
+  if (res.status === 401) {
+    return { ok: false, status: 401, notModified: false };
+  }
 
   if (res.status === 304) {
     const h = pickHeaders(res.headers);
-    log(`GET status=304 (not modified)`, h.etag ? `ETag=${h.etag}` : "", h.lastModified ? `Last-Modified=${h.lastModified}` : "");
+
+    log(
+      "GET status=304 (not modified)",
+      h.etag ? `ETag=${h.etag}` : "",
+      h.lastModified ? `Last-Modified=${h.lastModified}` : "",
+    );
+
     return { ok: true, status: 304, notModified: true, headers: h };
   }
 
@@ -259,6 +288,7 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
   }
 
   const h = pickHeaders(res.headers);
+
   log(
     `GET status=${res.status}`,
     h.etag ? `ETag=${h.etag}` : "",
@@ -269,84 +299,86 @@ async function downloadGtfs(accessToken, conditionalHeaders, cache) {
   );
 
   await downloadToFileWithProgress(res, OUT_FILE);
-  return { ok: true, status: res.status, notModified: false, headers: h };
+
+  return {
+    ok: true,
+    status: res.status,
+    notModified: false,
+    headers: h,
+  };
+}
+
+async function runDownloadFlow(tok, conditionalHeaders, cache, label) {
+  const dl = await downloadGtfs(tok.access_token, conditionalHeaders);
+
+  if (!dl.ok || dl.status === 401) {
+    return dl;
+  }
+
+  if (dl.notModified) {
+    log("GTFS not changed. Skipping download.");
+
+    if (dl.headers) {
+      writeCache({ ...cache, ...dl.headers, checkedAt: nowIso() });
+      log(`Updated cache: ${CACHE_FILE}`);
+    }
+
+    return dl;
+  }
+
+  log(label ? `Downloaded ${label}: ${OUT_FILE}` : `Downloaded: ${OUT_FILE}`);
+
+  if (dl.headers) {
+    writeCache({ ...dl.headers, checkedAt: nowIso() });
+    log(`Wrote cache: ${CACHE_FILE}`);
+  }
+
+  return dl;
 }
 
 async function main() {
   const cache = readCache();
-  const conditionalHeaders = buildConditionalHeaders(cache);
 
-  if (cache?.etag || cache?.lastModified) {
-    log("Cache loaded:", cache.etag ? `ETag=${cache.etag}` : "", cache.lastModified ? `Last-Modified=${cache.lastModified}` : "");
+  const conditionalHeaders = FORCE_DOWNLOAD ? {} : buildConditionalHeaders(cache);
+
+  if (FORCE_DOWNLOAD) {
+    log("FORCE_DOWNLOAD enabled. Ignoring cache and downloading GTFS.");
+  } else if (cache?.etag || cache?.lastModified) {
+    log(
+      "Cache loaded:",
+      cache.etag ? `ETag=${cache.etag}` : "",
+      cache.lastModified ? `Last-Modified=${cache.lastModified}` : "",
+    );
   } else {
     log("No cache present yet (first run).");
   }
 
   let tok = await getTokenWithPassword();
 
-  let dl = await downloadGtfs(tok.access_token, conditionalHeaders, cache);
-  if (dl.ok && dl.status !== 401) {
-    if (dl.notModified) {
-      log("GTFS not changed. Skipping download.");
-      if (dl.headers) {
-        writeCache({ ...cache, ...dl.headers, checkedAt: nowIso() });
-        log(`Updated cache: ${CACHE_FILE}`);
-      }
-      return;
-    }
+  let dl = await runDownloadFlow(tok, conditionalHeaders, cache, "");
 
-    log(`Downloaded: ${OUT_FILE}`);
-    if (dl.headers) {
-      writeCache({ ...dl.headers, checkedAt: nowIso() });
-      log(`Wrote cache: ${CACHE_FILE}`);
-    }
+  if (dl.ok && dl.status !== 401) {
     return;
   }
 
   if (dl.status === 401 && tok.refresh_token) {
     log("Access token rejected (401). Refreshing token and retrying...");
+
     tok = await refreshAccessToken(tok.refresh_token);
+    dl = await runDownloadFlow(tok, conditionalHeaders, cache, "after refresh");
 
-    dl = await downloadGtfs(tok.access_token, conditionalHeaders, cache);
     if (dl.ok && dl.status !== 401) {
-      if (dl.notModified) {
-        log("GTFS not changed. Skipping download.");
-        if (dl.headers) {
-          writeCache({ ...cache, ...dl.headers, checkedAt: nowIso() });
-          log(`Updated cache: ${CACHE_FILE}`);
-        }
-        return;
-      }
-
-      log(`Downloaded after refresh: ${OUT_FILE}`);
-      if (dl.headers) {
-        writeCache({ ...dl.headers, checkedAt: nowIso() });
-        log(`Wrote cache: ${CACHE_FILE}`);
-      }
       return;
     }
   }
 
   if (dl.status === 401) {
     log("Still 401. Re-authenticating with password grant and retrying...");
+
     tok = await getTokenWithPassword();
+    dl = await runDownloadFlow(tok, conditionalHeaders, cache, "after re-auth");
 
-    dl = await downloadGtfs(tok.access_token, conditionalHeaders, cache);
     if (dl.ok && dl.status !== 401) {
-      if (dl.notModified) {
-        log("GTFS not changed. Skipping download.");
-        if (dl.headers) {
-          writeCache({ ...cache, ...dl.headers, checkedAt: nowIso() });
-          log(`Updated cache: ${CACHE_FILE}`);
-        }
-        return;
-      }
-
-      log(`Downloaded after re-auth: ${OUT_FILE}`);
-      if (dl.headers) {
-        writeCache({ ...dl.headers, checkedAt: nowIso() });
-        log(`Wrote cache: ${CACHE_FILE}`);
-      }
       return;
     }
   }
