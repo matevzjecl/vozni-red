@@ -14,3 +14,8 @@ stop_id,type,stop_name
 1127269,0,M.Pirešica
 1131764,0,Vrhnika
 1131763,0,Vrhnika
+1122987,1,Velenje
+1122728,0,Velenje
+1122979,1,Petrovče
+1128242,0,Petrovče
+1128243,0,Petrovče
