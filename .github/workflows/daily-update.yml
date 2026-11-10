@@ -24,6 +24,7 @@ on:
       - "scripts/direct_timetables.py"
       - "scripts/build_pages.py"
       - "scripts/nap-download-gtfs.js"
+      - "scripts/resolve_stops.py"
 
 permissions:
   contents: write
@@ -45,6 +46,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Test stop-ID recovery
+        run: python -m unittest discover -s tests -v
 
       - name: Decide rebuild mode
         id: rebuild
@@ -73,7 +77,7 @@ jobs:
             echo "Changed files:"
             echo "$CHANGED_FILES"
 
-            if echo "$CHANGED_FILES" | grep -E '^(type_mappings\.txt|out\.json|scripts/direct_timetables\.py|scripts/build_pages\.py|scripts/nap-download-gtfs\.js)$'; then
+            if echo "$CHANGED_FILES" | grep -E '^(type_mappings\.txt|out\.json|scripts/direct_timetables\.py|scripts/build_pages\.py|scripts/nap-download-gtfs\.js|scripts/resolve_stops\.py)$'; then
               echo "Relevant file changed. Forcing rebuild."
               FORCE_REBUILD="true"
             fi
@@ -118,11 +122,13 @@ jobs:
             unzip -q "$GTFS_OUT" -d gtfs_tmp
 
             cp scripts/direct_timetables.py gtfs_tmp/direct_timetables.py
+            cp scripts/resolve_stops.py gtfs_tmp/resolve_stops.py
 
             if [ -f type_mappings.txt ]; then
               cp type_mappings.txt gtfs_tmp/type_mappings.txt
             fi
 
+            python gtfs_tmp/resolve_stops.py
             python gtfs_tmp/direct_timetables.py > gtfs_tmp/out.json
 
             if [ ! -s gtfs_tmp/out.json ]; then
@@ -135,6 +141,7 @@ jobs:
             cp gtfs_tmp/out.json out.json
 
             python scripts/build_pages.py out.json
+            cp gtfs_tmp/type_mappings.txt type_mappings.txt
 
             rm -rf gtfs_tmp
             rm -f "$GTFS_OUT"
